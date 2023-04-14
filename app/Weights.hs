@@ -1,22 +1,22 @@
 module Weights
-( fetchStats
-)
+  ( fetchStats,
+  )
 where
 
 import Control.Applicative
+import Control.Arrow ((&&&))
 import Control.Lens
 import Control.Monad
 import Control.Monad.Error.Class
 import Control.Monad.IO.Class
 import Data.Aeson
+import Data.List (groupBy, sortOn)
+import qualified Data.Map.Strict as Map
 import Data.Ord
-import Data.List(sortOn, groupBy)
-import Control.Arrow((&&&))
 import Data.Text (Text)
 import qualified Data.Text.Encoding as T
 import Data.Time
 import Data.Time.Clock.POSIX
-import qualified Data.Map.Strict as Map
 import GHC.Generics
 import Network.Wreq (FormParam ((:=)))
 import qualified Network.Wreq as Wreq
@@ -25,35 +25,36 @@ import Text.Show.Pretty
 
 fetchStats :: Text -> Handler [((UTCTime, UTCTime), Map.Map DayOfWeek Double)]
 fetchStats accessToken = do
-    fetchLimit <- liftIO $ addUTCTime ((-90) * nominalDay) <$> getCurrentTime
-    let statsRequestUrl = "https://wbsapi.withings.net/measure"
-        statsRequestBody =
-          [ "action" := ("getmeas" :: Text),
-            "meastype" := ("1" :: Text),
-            "category" := ("1" :: Text),
-            "startdate" := round @_ @Integer (nominalDiffTimeToSeconds $ utcTimeToPOSIXSeconds fetchLimit)
-          ]
-        statsRequestOptions =
-          Wreq.defaults
-            & Wreq.header "Accept" .~ ["application/json"]
-            & Wreq.header "Authorization" .~ ["Bearer " <> T.encodeUtf8 accessToken]
-    response <- liftIO $ Wreq.postWith statsRequestOptions statsRequestUrl statsRequestBody
-    liftIO $ pPrint response
-    let orderedWeights :: [(UTCTime, Double)] -> [((UTCTime, UTCTime), Map.Map DayOfWeek Double)]
-        orderedWeights =
-          map (\xs -> ((minimum &&& maximum) $ map (fst . snd) xs, Map.fromList $ reverse $ map (\(wd, (_, m)) -> (wd, m)) xs))
+  fetchLimit <- liftIO $ addUTCTime ((-90) * nominalDay) <$> getCurrentTime
+  let statsRequestUrl = "https://wbsapi.withings.net/measure"
+      statsRequestBody =
+        [ "action" := ("getmeas" :: Text),
+          "meastype" := ("1" :: Text),
+          "category" := ("1" :: Text),
+          "startdate" := round @_ @Integer (nominalDiffTimeToSeconds $ utcTimeToPOSIXSeconds fetchLimit)
+        ]
+      statsRequestOptions =
+        Wreq.defaults
+          & Wreq.header "Accept" .~ ["application/json"]
+          & Wreq.header "Authorization" .~ ["Bearer " <> T.encodeUtf8 accessToken]
+  response <- liftIO $ Wreq.postWith statsRequestOptions statsRequestUrl statsRequestBody
+  liftIO $ pPrint response
+  let orderedWeights :: [(UTCTime, Double)] -> [((UTCTime, UTCTime), Map.Map DayOfWeek Double)]
+      orderedWeights =
+        map (\xs -> ((minimum &&& maximum) $ map (fst . snd) xs, Map.fromList $ reverse $ map (\(wd, (_, m)) -> (wd, m)) xs))
           . groupBy (\_ x -> fst x /= Sunday)
           . map (dayOfWeek . utctDay . fst &&& id)
           . sortOn (Down . fst)
-    case eitherDecode @StatsResponse (response ^. Wreq.responseBody) of
-      Left e -> do
-        liftIO $ print @(Text, _) ("Cannot parse stats response", e)
-        throwError $ err500 { errBody = "Cannot parse stats response" }
-      Right r -> do
-        unless (r.srStatus == 0) $
-          throwError $ err500 { errBody = "Stats error" }
-        liftIO $ pPrint r
-        return $ orderedWeights $ concatMap zippedWeights r.srBody.srbMeasureGroups
+  case eitherDecode @StatsResponse (response ^. Wreq.responseBody) of
+    Left e -> do
+      liftIO $ print @(Text, _) ("Cannot parse stats response", e)
+      throwError $ err500 {errBody = "Cannot parse stats response"}
+    Right r -> do
+      unless (r.srStatus == 0) $
+        throwError $
+          err500 {errBody = "Stats error"}
+      liftIO $ pPrint r
+      return $ orderedWeights $ concatMap zippedWeights r.srBody.srbMeasureGroups
 
 data StatsResponse = StatsResponse
   { srStatus :: Integer,
@@ -102,7 +103,8 @@ zippedWeights mg =
   if mg.mgAttrib == 0 && mg.mgCategory == 1
     then
       zip (repeat $ posixSecondsToUTCTime $ fromInteger mg.mgMeasureTime) $
-        map computeMesureValue $ filterWeightMeasures mg.mgMeasures
+        map computeMesureValue $
+          filterWeightMeasures mg.mgMeasures
     else []
 
 instance FromJSON MeasureGroup where

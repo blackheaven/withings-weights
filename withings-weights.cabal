@@ -15,6 +15,11 @@ executable withings-weights
   -- type: exitcode-stdio-1.0
   main-is: Main.hs
   hs-source-dirs: app
+  other-modules:
+    Weights
+    -- State
+    Oauth
+    -- Config
   default-extensions:
       DataKinds
       DefaultSignatures
