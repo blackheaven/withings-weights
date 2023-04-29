@@ -10,11 +10,12 @@ import Control.Monad
 import Control.Monad.Error.Class
 import Control.Monad.IO.Class
 import Data.Aeson
+import Data.ByteString (ByteString)
+import qualified Data.ByteString.Lazy as LBS
 import Data.List (groupBy, sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Ord
 import Data.Text (Text)
-import qualified Data.Text.Encoding as T
 import Data.Time
 import Data.Time.Clock.POSIX
 import GHC.Generics
@@ -23,21 +24,24 @@ import qualified Network.Wreq as Wreq
 import Servant.Server
 import Text.Show.Pretty
 
-fetchStats :: Text -> Handler [((UTCTime, UTCTime), Map.Map DayOfWeek Double)]
-fetchStats accessToken = do
+fetchStats ::
+  ((ByteString -> IO (Wreq.Response LBS.ByteString)) -> Handler (Wreq.Response LBS.ByteString)) ->
+  Handler [((UTCTime, UTCTime), Map.Map DayOfWeek Double)]
+fetchStats withAccessToken = do
   fetchLimit <- liftIO $ addUTCTime ((-90) * nominalDay) <$> getCurrentTime
-  let statsRequestUrl = "https://wbsapi.withings.net/measure"
-      statsRequestBody =
-        [ "action" := ("getmeas" :: Text),
-          "meastype" := ("1" :: Text),
-          "category" := ("1" :: Text),
-          "startdate" := round @_ @Integer (nominalDiffTimeToSeconds $ utcTimeToPOSIXSeconds fetchLimit)
-        ]
-      statsRequestOptions =
-        Wreq.defaults
-          & Wreq.header "Accept" .~ ["application/json"]
-          & Wreq.header "Authorization" .~ ["Bearer " <> T.encodeUtf8 accessToken]
-  response <- liftIO $ Wreq.postWith statsRequestOptions statsRequestUrl statsRequestBody
+  response <- withAccessToken $ \accessToken ->
+    let statsRequestUrl = "https://wbsapi.withings.net/measure"
+        statsRequestBody =
+          [ "action" := ("getmeas" :: Text),
+            "meastype" := ("1" :: Text),
+            "category" := ("1" :: Text),
+            "startdate" := round @_ @Integer (nominalDiffTimeToSeconds $ utcTimeToPOSIXSeconds fetchLimit)
+          ]
+        statsRequestOptions =
+          Wreq.defaults
+            & Wreq.header "Accept" .~ ["application/json"]
+            & Wreq.header "Authorization" .~ ["Bearer " <> accessToken]
+     in Wreq.postWith statsRequestOptions statsRequestUrl statsRequestBody
   liftIO $ pPrint response
   let orderedWeights :: [(UTCTime, Double)] -> [((UTCTime, UTCTime), Map.Map DayOfWeek Double)]
       orderedWeights =
@@ -66,8 +70,10 @@ instance FromJSON StatsResponse where
   parseJSON =
     withObject "StatsResponse" $ \o ->
       StatsResponse
-        <$> o .: "status"
-        <*> o .: "body"
+        <$> o
+        .: "status"
+        <*> o
+        .: "body"
 
 data StatsResponseBody = StatsResponseBody
   { srbUpdateTime :: Integer,
@@ -82,9 +88,12 @@ instance FromJSON StatsResponseBody where
   parseJSON =
     withObject "StatsResponseBody" $ \o ->
       StatsResponseBody
-        <$> o .: "updatetime"
-        <*> o .: "timezone"
-        <*> o .: "measuregrps"
+        <$> o
+        .: "updatetime"
+        <*> o
+        .: "timezone"
+        <*> o
+        .: "measuregrps"
         <*> optional (o .: "offset")
         <*> optional (o .: "more")
 
@@ -111,12 +120,17 @@ instance FromJSON MeasureGroup where
   parseJSON =
     withObject "MeasureGroup" $ \o ->
       MeasureGroup
-        <$> o .: "grpid"
-        <*> o .: "attrib"
-        <*> o .: "date"
-        <*> o .: "category"
+        <$> o
+        .: "grpid"
+        <*> o
+        .: "attrib"
+        <*> o
+        .: "date"
+        <*> o
+        .: "category"
         -- <*> o .: "timezone"
-        <*> o .: "measures"
+        <*> o
+        .: "measures"
 
 data Measure = Measure
   { mBaseValue :: Integer,
@@ -129,9 +143,12 @@ instance FromJSON Measure where
   parseJSON =
     withObject "Measure" $ \o ->
       Measure
-        <$> o .: "value"
-        <*> o .: "type"
-        <*> o .: "unit"
+        <$> o
+        .: "value"
+        <*> o
+        .: "type"
+        <*> o
+        .: "unit"
 
 filterWeightMeasures :: [Measure] -> [Measure]
 filterWeightMeasures = filter $ (== 1) . (.mType)

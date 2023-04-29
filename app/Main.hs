@@ -2,90 +2,158 @@
 
 module Main (main) where
 
+import Control.Monad
+import Control.Monad.Error.Class
 import qualified Data.ByteString.Lazy as B
-import Data.List (intersperse)
 import qualified Data.Map.Strict as Map
 import Data.Proxy
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import Data.Time
-import qualified Env as Env
+import qualified Env
 import qualified Env.Generic as Env
+import GHC.Exts
 import GHC.Generics
 import Network.HTTP.Media ((//), (/:))
 import Network.Wai.Handler.Warp
 import Oauth
 import Servant.API
 import Servant.Server
+import Servant.Server.StaticFiles
+import System.IO
 import Text.Printf
 import Weights
 
 main :: IO ()
-main = Env.parse (Env.header "Withings Average Weeks Weight") Env.record >>= run 5555 . app
+main = do
+  hSetBuffering stdout LineBuffering
+  (serverEnv, oauthEnv) <- Env.parse (Env.header "Withings Average Weeks Weight") $ (,) <$> Env.record <*> Env.record
+  info <- mkUsersInfo oauthEnv
+  putStrLn $ "Listening on " <> show serverEnv.serverPort
+  run serverEnv.serverPort $ app serverEnv oauthEnv info
 
 type API = NamedRoutes Routes
 
 data Routes mode = Routes
   { home ::
       mode :- Get '[HTML] Text,
+    newUser ::
+      mode
+        :- "newUser"
+        :> QueryParam' '[Required] "user" UserName
+        :> Get '[HTML] Text,
     oauth ::
       mode
         :- "oauth"
-          :> QueryParam' '[Required] "code" Text
-          :> QueryParam' '[Required] "state" Text
-          :> Get '[HTML] Text,
+        :> QueryParam' '[Required] "code" Text
+        :> QueryParam' '[Required] "state" Text
+        :> Get '[HTML] Text,
     stats ::
       mode
         :- "stats"
-          :> QueryParam' '[Required] "accessToken" Text
-          :> Get '[HTML] Text
+        :> QueryParam' '[Required] "user" UserName
+        :> Get '[HTML] Text,
+    assets ::
+      mode
+        :- "assets"
+        :> Raw
   }
   deriving (Generic)
 
-app :: OauthEnv -> Application
-app env =
+data ServerEnv = ServerEnv
+  { serverAssetsPath :: FilePath,
+    serverPort :: Int
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance Env.Record Env.Error ServerEnv
+
+app :: ServerEnv -> OauthEnv -> UsersInfo -> Application
+app serverEnv oauthEnv info =
   serve (Proxy @API) $
     Routes
-      { home = homeHandler env,
-        oauth = oauthHandler env,
-        stats = statsHandler env
+      { home = homeHandler info,
+        newUser = prepareOauthHandler oauthEnv,
+        oauth = retrieveOauthHandler oauthEnv info,
+        stats = statsHandler oauthEnv info,
+        assets = serveDirectoryWebApp serverEnv.serverAssetsPath
       }
 
-homeHandler :: OauthEnv -> Handler Text
-homeHandler env =
+homeHandler :: UsersInfo -> Handler Text
+homeHandler info = do
+  users <- listUsers info
   return $
-    mconcat
+    T.unlines
       [ "<html>",
         "  <head>",
-        "    <title>Home page</title>",
+        "    <title>Users</title>",
+        cssHeaders,
         "  </head>",
         "  <body>",
-        "    <p><a href=\"" <> withingsOauthUrl env <> "\">Ask for Withings connection</a></p>",
+        "    <h1>Users</h1>",
+        "    <p>",
+        "      <ul>",
+        foldMap
+          (\u -> "    <li><a class=\"pure-menu-link\" href=\"stats?user=" <> u.getUserName <> "\">" <> u.getUserName <> "</a></li>")
+          users,
+        "      </ul>",
+        "    </p>",
+        "    <p>",
+        "      <form action=\"/newUser\" method=\"GET\" class=\"pure-form\">",
+        "        <label for=\"user\">User name</label>",
+        "        <input name=\"user\" id=\"user\" />",
+        "        <button class=\"pure-button\">Add a user</button>",
+        "      </form>",
+        "    </p>",
         "  </body>",
         "</html>"
       ]
 
-oauthHandler :: OauthEnv -> Text -> Text -> Handler Text
-oauthHandler env code state = do
-  (accessToken, refreshToken) <- fetchOauthTokens env code state
+prepareOauthHandler :: OauthEnv -> UserName -> Handler Text
+prepareOauthHandler env user = do
+  when (user.getUserName == "") $
+    throwError $
+      err400 {errBody = "Username should not be empty"}
 
   return $
-    mconcat
+    T.unlines
       [ "<html>",
         "  <head>",
-        "    <title>Loged-in</title>",
+        "    <title>Sign-in</title>",
+        cssHeaders,
         "  </head>",
         "  <body>",
-        "    <p><a href=\"/stats?accessToken=" <> accessToken <> "&refreshToken=" <> refreshToken <> "\">Check your stats!</a></p>",
+        "    <h1>Sign-in</h1>",
+        "    <p><a  " <> cssClassLinkButton <> "href=\"" <> withingsOauthUrl env user <> "\">Ask for Withings connection</a></p>",
         "  </body>",
         "</html>"
       ]
 
-statsHandler :: OauthEnv -> Text -> Handler Text
-statsHandler _env accessToken = do
-  groupedWeights <- fetchStats accessToken
-  let renderWeight :: ((UTCTime, UTCTime), Map.Map DayOfWeek Double) -> String
+retrieveOauthHandler :: OauthEnv -> UsersInfo -> Text -> Text -> Handler Text
+retrieveOauthHandler env info code state = do
+  user <- fetchOauthTokens env info code state
+
+  return $
+    T.unlines
+      [ "<html>",
+        "  <head>",
+        "    <title>Signed-in</title>",
+        cssHeaders,
+        "  </head>",
+        "  <body>",
+        "    <h1>Signed-in</h1>",
+        "    <p><a  " <> cssClassLinkButton <> "href=\"/stats?user=" <> user.getUserName <> "\">Check your stats!</a></p>",
+        "  </body>",
+        "</html>"
+      ]
+
+statsHandler :: OauthEnv -> UsersInfo -> UserName -> Handler Text
+statsHandler env info user = do
+  groupedWeights <- fetchStats $ withOauthBearer env info user
+  let withWeekDay :: (Monoid a, IsString a) => (DayOfWeek -> a) -> a
+      withWeekDay f = foldMap (\d -> "<td>" <> f d <> "</td>") [Monday .. Sunday]
+      renderWeight :: ((UTCTime, UTCTime), Map.Map DayOfWeek Double) -> String
       renderWeight ((start, end), measures) =
         let measures' = Map.elems measures
             avg :: Double
@@ -95,22 +163,48 @@ statsHandler _env accessToken = do
             fmtWeight :: Double -> String
             fmtWeight = printf "%.2f"
             dailyWeights :: String
-            dailyWeights = concat $ intersperse " " $ map (\(d, w) -> fmtWeight w <> "kg [" <> take 1 (show d) <> "]") $ Map.toList measures
-         in "    <li><b>" <> fmtDay start <> " - " <> fmtDay end <> " (" <> fmtWeight avg <> ")</b>: " <> dailyWeights <> "</li>"
+            dailyWeights = withWeekDay (\d -> maybe "" (\w -> fmtWeight w <> "kg") $ Map.lookup d measures)
+         in mconcat
+              [ "          <tr>",
+                "<td>" <> fmtDay start <> "</td>",
+                "<td>" <> fmtDay end <> "</td>",
+                "<td><b>" <> fmtWeight avg <> "kg</b></td>",
+                dailyWeights,
+                "</tr>"
+              ]
   return $
-    mconcat
+    T.unlines
       [ "<html>",
         "  <head>",
         "    <title>Your stats</title>",
+        cssHeaders,
         "  </head>",
         "  <body>",
         "    <h1>Your weights:</h1>",
-        "    <ul>",
+        "    <p>",
+        "      <table class=\"mq-table pure-table-horizontal pure-table\">",
+        "        <thead><tr><th>Start</th><th>End</th><th>Average</th>" <> withWeekDay (T.pack . show) <> "</tr></thead>",
+        "        <tbody>",
         T.pack $ concatMap renderWeight groupedWeights,
-        "    </ul>",
+        "        </tbody>",
+        "      </table>",
+        "    </p>",
+        "    <p><a  " <> cssClassLinkButton <> "href=\"/\">Go back home</a></p>",
         "  </body>",
         "</html>"
       ]
+
+cssHeaders :: Text
+cssHeaders =
+  T.unlines
+    [ "    <link rel=\"stylesheet\" href=\"/assets/purecss-3.0.0/pure-min.css\">",
+      "    <link rel=\"stylesheet\" href=\"/assets/purecss-3.0.0/grids-responsive-min.css\">",
+      "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
+      "    <link rel=\"stylesheet\" href=\"/assets/style.css\">"
+    ]
+
+cssClassLinkButton :: Text
+cssClassLinkButton = "class=\"pure-button pure-button-primary\""
 
 data HTML
 

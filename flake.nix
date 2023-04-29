@@ -7,52 +7,85 @@
   };
 
   outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let
-        pkgs = nixpkgs.legacyPackages.${system};
+    # flake-utils.lib.eachDefaultSystem
+    flake-utils.lib.eachSystem [ flake-utils.lib.system.x86_64-linux ]
+      (system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
 
-        github = owner: repo: rev: sha256:
-          builtins.fetchTarball { inherit sha256; url = "https://github.com/${owner}/${repo}/archive/${rev}.tar.gz"; };
+          github = owner: repo: rev: sha256:
+            builtins.fetchTarball { inherit sha256; url = "https://github.com/${owner}/${repo}/archive/${rev}.tar.gz"; };
 
-        sources = { };
+          sources = { };
 
-        jailbreakUnbreak = pkg:
-          pkgs.haskell.lib.doJailbreak (pkgs.haskell.lib.dontCheck (pkgs.haskell.lib.unmarkBroken pkg));
+          jailbreakUnbreak = pkg:
+            pkgs.haskell.lib.doJailbreak (pkgs.haskell.lib.dontCheck (pkgs.haskell.lib.unmarkBroken pkg));
 
-        haskellPackages = pkgs.haskell.packages.ghc925.override {
-          overrides = hself: hsuper: { };
-        };
-      in
-      rec
-      {
-        packages.withings-weights = # (ref:haskell-package-def)
-          haskellPackages.callCabal2nix "withings-weights" ./. rec {
-            # Dependency overrides go here
+          haskellPackages = pkgs.haskell.packages.ghc925.override {
+            overrides = hself: hsuper: { };
           };
+          assets = builtins.filterSource (path: type: pkgs.lib.strings.hasInfix "assets" path) ./.;
+        in
+        rec
+        {
+          packages.withings-weights =
+            haskellPackages.callCabal2nix "withings-weights" ./. rec {
+              # Dependency overrides go here
+            };
+          packages.withings-weights-image =
+            pkgs.dockerTools.buildImage {
+              name = "blackheaven/withings-weights";
+              tag = "latest";
 
-        defaultPackage = packages.withings-weights;
 
-        devShell =
-          let
-            scripts = pkgs.symlinkJoin {
-              name = "scripts";
-              paths = pkgs.lib.mapAttrsToList pkgs.writeShellScriptBin {
-                ormolu = ''
-                  ${pkgs.ormolu}/bin/ormolu -o -XDataKinds -o -XDefaultSignatures -o -XDeriveAnyClass -o -XDeriveGeneric -o -XDerivingStrategies -o -XDerivingVia -o -XDuplicateRecordFields -o -XFlexibleContexts -o -XGADTs -o -XGeneralizedNewtypeDeriving -o -XKindSignatures -o -XLambdaCase -o -XNoImplicitPrelude -o -XOverloadedLists -o -XOverloadedStrings -o -XRankNTypes -o -XRecordWildCards -o -XScopedTypeVariables -o -XTypeApplications -o -XTypeFamilies -o -XTypeOperators -o -XNoImportQualifiedPost -o -XOverloadedRecordDot $@
-                '';
+              copyToRoot = pkgs.buildEnv {
+                name = "image-root";
+                paths = [ pkgs.cacert self.packages.${system}.withings-weights assets ];
+                pathsToLink = [ "/bin" "/etc" "/assets" ];
+              };
+              runAsRoot = ''
+                #!${pkgs.runtimeShell}
+                mkdir -p /assets
+                mkdir -p /store
+              '';
+              config = {
+                Entrypoint = [ "/bin/withings-weights" ];
+                Env = [
+                  "OAUTH_STORE_PATH=/store/users.json"
+                  "SERVER_PORT=80"
+                  "SERVER_ASSETS_PATH=/assets"
+                ];
+                Volumes = {
+                  "/store" = { };
+                  "/assets" = { };
+                };
               };
             };
-          in
-          pkgs.mkShell {
-            buildInputs = with haskellPackages; [
-              haskell-language-server
-              ghcid
-              cabal-install
-              scripts
-            ];
-            inputsFrom = [
-              self.defaultPackage.${system}.env
-            ];
-          };
-      });
+
+          defaultPackage = packages.withings-weights;
+
+          devShell =
+            let
+              scripts = pkgs.symlinkJoin {
+                name = "scripts";
+                paths = pkgs.lib.mapAttrsToList pkgs.writeShellScriptBin {
+                  ormolu-ide = ''
+                    ${pkgs.ormolu}/bin/ormolu -o -XNoImportQualifiedPost -o -XOverloadedRecordDot $@
+                  '';
+                };
+              };
+            in
+            pkgs.mkShell {
+              buildInputs = with haskellPackages; [
+                haskell-language-server
+                ghcid
+                cabal-install
+                scripts
+                ormolu
+              ];
+              inputsFrom = [
+                self.defaultPackage.${system}.env
+              ];
+            };
+        });
 }

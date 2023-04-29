@@ -47,6 +47,7 @@ executable withings-weights
     , aeson
     , bytestring
     , containers
+    , directory
     , envparse
     , http-client
     , http-client-tls
