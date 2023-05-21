@@ -15,7 +15,7 @@ jobs:
       with:
         github_access_token: ${{ secrets.GITHUB_TOKEN }}
     - name: enable kvm to build docker image
-      run: sed -E '/system-features/s/$/ kvm/' -i /etc/nix/nix.conf
+      run: sudo sed -E '/system-features/s/$/ kvm/' -i /etc/nix/nix.conf
     - run: nix build
     - run: nix build '.#packages.x86_64-linux.withings-weights-image'
     - run: nix flake check
