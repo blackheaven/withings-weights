@@ -42,7 +42,7 @@ fetchStats withAccessToken = do
             & Wreq.header "Accept" .~ ["application/json"]
             & Wreq.header "Authorization" .~ ["Bearer " <> accessToken]
      in Wreq.postWith statsRequestOptions statsRequestUrl statsRequestBody
-  liftIO $ pPrint response
+  -- liftIO $ pPrint response
   let orderedWeights :: [(UTCTime, Double)] -> [((UTCTime, UTCTime), Map.Map DayOfWeek Double)]
       orderedWeights =
         map (\xs -> ((minimum &&& maximum) $ map (fst . snd) xs, Map.fromList $ reverse $ map (\(wd, (_, m)) -> (wd, m)) xs))
@@ -57,7 +57,7 @@ fetchStats withAccessToken = do
       unless (r.srStatus == 0) $
         throwError $
           err500 {errBody = "Stats error"}
-      liftIO $ pPrint r
+      -- liftIO $ pPrint r
       return $ orderedWeights $ concatMap zippedWeights r.srBody.srbMeasureGroups
 
 data StatsResponse = StatsResponse

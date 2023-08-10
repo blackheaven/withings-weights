@@ -94,7 +94,7 @@ oauthHandler env code state = do
         ]
       oauthRequestOptions = Wreq.defaults & Wreq.header "Accept" .~ ["application/json"]
   response <- liftIO $ Wreq.postWith oauthRequestOptions oauthRequestUrl oauthRequestBody
-  liftIO $ pPrint response
+  -- liftIO $ pPrint response
   (accessToken, refreshToken) <-
     case eitherDecode @RequestTokenResponse (response ^. Wreq.responseBody) of
       Left e -> do
@@ -134,7 +134,7 @@ statsHandler _env accessToken = do
           & Wreq.header "Accept" .~ ["application/json"]
           & Wreq.header "Authorization" .~ ["Bearer " <> T.encodeUtf8 accessToken]
   response <- liftIO $ Wreq.postWith statsRequestOptions statsRequestUrl statsRequestBody
-  liftIO $ pPrint response
+  -- liftIO $ pPrint response
   let orderedWeights :: [(UTCTime, Double)] -> [((UTCTime, UTCTime), Map.Map DayOfWeek Double)]
       orderedWeights =
         map (\xs -> ((minimum &&& maximum) $ map (fst . snd) xs, Map.fromList $ reverse $ map (\(wd, (_, m)) -> (wd, m)) xs))
