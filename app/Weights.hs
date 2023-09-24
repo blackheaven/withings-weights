@@ -46,7 +46,10 @@ fetchStats withAccessToken = do
   let orderedWeights :: [(UTCTime, Double)] -> [((UTCTime, UTCTime), Map.Map DayOfWeek Double)]
       orderedWeights =
         map (\xs -> ((minimum &&& maximum) $ map (fst . snd) xs, Map.fromList $ reverse $ map (\(wd, (_, m)) -> (wd, m)) xs))
-          . groupBy (\_ x -> fst x /= Sunday)
+          . groupBy
+            ( \(od, (ot, _)) (nd, (nt, _)) ->
+                diffUTCTime ot nt <= fromIntegral (1 + fromEnum od - fromEnum nd) * nominalDay
+            )
           . map (dayOfWeek . utctDay . fst &&& id)
           . sortOn (Down . fst)
   case eitherDecode @StatsResponse (response ^. Wreq.responseBody) of
