@@ -22,7 +22,6 @@ import GHC.Generics
 import Network.Wreq (FormParam ((:=)))
 import qualified Network.Wreq as Wreq
 import Servant.Server
-import Text.Show.Pretty
 
 fetchStats ::
   ((ByteString -> IO (Wreq.Response LBS.ByteString)) -> Handler (Wreq.Response LBS.ByteString)) ->
