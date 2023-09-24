@@ -4,20 +4,27 @@ module Main (main) where
 
 import Control.Monad
 import Control.Monad.Error.Class
+import Control.Monad.IO.Class
 import qualified Data.ByteString.Lazy as B
+import Data.Fixed
 import qualified Data.Map.Strict as Map
 import Data.Proxy
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import Data.Time
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import qualified Env
 import qualified Env.Generic as Env
 import GHC.Exts
 import GHC.Generics
 import Network.HTTP.Media ((//), (/:))
 import Network.Wai.Handler.Warp
+import Network.Wai.Middleware.Prometheus
 import Oauth
+import Prometheus
+import Prometheus.Metric.GHC
+import Prometheus.Servant
 import Servant.API
 import Servant.Server
 import Servant.Server.StaticFiles
@@ -31,7 +38,18 @@ main = do
   (serverEnv, oauthEnv) <- Env.parse (Env.header "Withings Average Weeks Weight") $ (,) <$> Env.record <*> Env.record
   info <- mkUsersInfo oauthEnv
   putStrLn $ "Listening on " <> show serverEnv.serverPort
-  run serverEnv.serverPort $ app serverEnv oauthEnv info
+  -- Metrics
+  register ghcMetrics
+  metrics <-
+    WithingsMetrics
+      <$> register (vector "username" $ gauge (Info "withings_last_checked" "Last time a User checked his/her stats"))
+      <*> register (vector "username" $ gauge (Info "withings_last_weight" "Last User weight"))
+      <*> register (counter (Info "withings_users" "Users count"))
+
+  addCounter metrics.users . fromIntegral . length =<< runHandler (listUsers info)
+
+  let servantPMW = prometheusMiddleware defaultMetrics $ Proxy @API
+  run serverEnv.serverPort $ prometheus def $ servantPMW $ app serverEnv oauthEnv info metrics
 
 type API = NamedRoutes Routes
 
@@ -69,14 +87,14 @@ data ServerEnv = ServerEnv
 
 instance Env.Record Env.Error ServerEnv
 
-app :: ServerEnv -> OauthEnv -> UsersInfo -> Application
-app serverEnv oauthEnv info =
+app :: ServerEnv -> OauthEnv -> UsersInfo -> WithingsMetrics -> Application
+app serverEnv oauthEnv info metrics =
   serve (Proxy @API) $
     Routes
       { home = homeHandler info,
         newUser = prepareOauthHandler oauthEnv,
-        oauth = retrieveOauthHandler oauthEnv info,
-        stats = statsHandler oauthEnv info,
+        oauth = retrieveOauthHandler oauthEnv info metrics,
+        stats = statsHandler oauthEnv info metrics,
         assets = serveDirectoryWebApp serverEnv.serverAssetsPath
       }
 
@@ -130,9 +148,10 @@ prepareOauthHandler env user = do
         "</html>"
       ]
 
-retrieveOauthHandler :: OauthEnv -> UsersInfo -> Text -> Text -> Handler Text
-retrieveOauthHandler env info code state = do
+retrieveOauthHandler :: OauthEnv -> UsersInfo -> WithingsMetrics -> Text -> Text -> Handler Text
+retrieveOauthHandler env info metrics code state = do
   user <- fetchOauthTokens env info code state
+  liftIO $ incCounter metrics.users
 
   return $
     T.unlines
@@ -148,9 +167,15 @@ retrieveOauthHandler env info code state = do
         "</html>"
       ]
 
-statsHandler :: OauthEnv -> UsersInfo -> UserName -> Handler Text
-statsHandler env info user = do
+statsHandler :: OauthEnv -> UsersInfo -> WithingsMetrics -> UserName -> Handler Text
+statsHandler env info metrics user = do
   groupedWeights <- fetchStats $ withOauthBearer env info user
+  let fromFixed :: (Fractional a, HasResolution b) => Fixed b -> a
+      fromFixed fv@(MkFixed v) = (fromIntegral v) / (fromIntegral $ resolution fv)
+  nowGaugeValue <- fromFixed . nominalDiffTimeToSeconds . utcTimeToPOSIXSeconds <$> liftIO getCurrentTime
+  liftIO $
+    withLabel metrics.lastChecked user.getUserName $ \metric ->
+      setGauge metric nowGaugeValue
   let withWeekDay :: (Monoid a, IsString a) => (DayOfWeek -> a) -> a
       withWeekDay f = foldMap (\d -> "<td>" <> f d <> "</td>") [Monday .. Sunday]
       renderWeight :: ((UTCTime, UTCTime), Map.Map DayOfWeek Double) -> String
@@ -213,3 +238,9 @@ instance Accept HTML where
 
 instance MimeRender HTML Text where
   mimeRender _ = B.fromStrict . T.encodeUtf8
+
+data WithingsMetrics = WithingsMetrics
+  { lastChecked :: Vector Text Gauge,
+    lastWeight :: Vector Text Gauge,
+    users :: Counter
+  }

@@ -37,7 +37,24 @@
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "servant-prometheus": "servant-prometheus"
+      }
+    },
+    "servant-prometheus": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1693845536,
+        "narHash": "sha256-6vhyZbFzlUzzsBhgMgqggnONymz1rCRgLx9R8nUATMo=",
+        "owner": "worm2fed",
+        "repo": "servant-prometheus",
+        "rev": "f2859d3d701b42ca266ce0f21b671b1c0e5995b4",
+        "type": "github"
+      },
+      "original": {
+        "owner": "worm2fed",
+        "repo": "servant-prometheus",
+        "type": "github"
       }
     },
     "systems": {

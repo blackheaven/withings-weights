@@ -4,17 +4,33 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    servant-prometheus = {
+      url = "github:worm2fed/servant-prometheus";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, ... }@inputs:
     # flake-utils.lib.eachDefaultSystem
     flake-utils.lib.eachSystem [ flake-utils.lib.system.x86_64-linux ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        haskellPackages = pkgs.haskellPackages;
+
+        jailbreakUnbreak = pkg:
+          pkgs.haskell.lib.doJailbreak (pkgs.haskell.lib.dontCheck (pkgs.haskell.lib.unmarkBroken pkg));
+
+        haskellPackages = pkgs.haskellPackages.override
+          {
+            overrides = hself: hsuper: {
+              # prometheus-wai-middleware = jailbreakUnbreak hsuper.prometheus-wai-middleware;
+              servant-prometheus = jailbreakUnbreak (hsuper.callCabal2nix "servant-prometheus" inputs.servant-prometheus { });
+            };
+          };
+
         assets = builtins.filterSource
           (path: type: pkgs.lib.strings.hasInfix "assets" path) ./.;
-      in rec {
+      in
+      rec {
         packages.withings-weights =
           haskellPackages.callCabal2nix "withings-weights" ./. rec {
             # Dependency overrides go here
@@ -50,24 +66,26 @@
 
         defaultPackage = packages.withings-weights;
 
-        devShell = let
-          scripts = pkgs.symlinkJoin {
-            name = "scripts";
-            paths = pkgs.lib.mapAttrsToList pkgs.writeShellScriptBin {
-              ormolu-ide = ''
-                ${pkgs.ormolu}/bin/ormolu -o -XNoImportQualifiedPost -o -XOverloadedRecordDot $@
-              '';
+        devShell =
+          let
+            scripts = pkgs.symlinkJoin {
+              name = "scripts";
+              paths = pkgs.lib.mapAttrsToList pkgs.writeShellScriptBin {
+                ormolu-ide = ''
+                  ${pkgs.ormolu}/bin/ormolu -o -XNoImportQualifiedPost -o -XOverloadedRecordDot $@
+                '';
+              };
             };
+          in
+          pkgs.mkShell {
+            buildInputs = with haskellPackages; [
+              haskell-language-server
+              ghcid
+              cabal-install
+              scripts
+              ormolu
+            ];
+            inputsFrom = [ self.defaultPackage.${system}.env ];
           };
-        in pkgs.mkShell {
-          buildInputs = with haskellPackages; [
-            haskell-language-server
-            ghcid
-            cabal-install
-            scripts
-            ormolu
-          ];
-          inputsFrom = [ self.defaultPackage.${system}.env ];
-        };
       });
 }
