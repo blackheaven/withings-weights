@@ -73,9 +73,9 @@
           };
         };
 
-        defaultPackage = packages.withings-weights;
+        packages.default = packages.withings-weights;
 
-        overlays.default = nixpkgsOverlay;
+        overlays = nixpkgsOverlay;
 
         nixosModules.default =
           { pkgs, lib, config, ... }:
@@ -142,34 +142,34 @@
                 withings-weights = {};
               };
 
-                systemd.tmpfiles.rules = lib.mkIf (cfg.store == defaultStorePath) [
-                  "d ${defaultStoreRootPath} 0755 ${cfg.user} ${cfg.group} -"
-                ];
+              systemd.tmpfiles.rules = lib.mkIf (cfg.store == defaultStorePath) [
+                "d ${defaultStoreRootPath} 0755 ${cfg.user} ${cfg.group} -"
+              ];
 
-                systemd.services.withings-weights = {
-                  description = "Withings Weights WebUI";
-                  after = [ "network.target" ];
-                  wantedBy = [ "multi-user.target" ];
-                  script = ''
-                    export OAUTH_CLIENT_ID=$(cat ${cfg.oauthClientIdFile})
-                    export OAUTH_CLIENT_SECRET=$(cat ${cfg.oauthClientSecretFile})
-                    exec ${lib.getExe cfg.package}
-                  '';
-                  serviceConfig = {
-                    User = cfg.user;
-                    Group = cfg.group;
-                    Environment = [
-                      "SERVER_PORT=${toString cfg.port}"
-                      "SERVER_ASSETS_PATH=${cfg.assets}"
-                      "OAUTH_CALLBACK_URL=${cfg.oauthCallbackUrl}"
-                      "OAUTH_STORE_PATH=${cfg.store}"
-                    ];
-                  };
+              systemd.services.withings-weights = {
+                description = "Withings Weights WebUI";
+                after = [ "network.target" ];
+                wantedBy = [ "multi-user.target" ];
+                script = ''
+                  export OAUTH_CLIENT_ID=$(cat ${cfg.oauthClientIdFile})
+                  export OAUTH_CLIENT_SECRET=$(cat ${cfg.oauthClientSecretFile})
+                  exec ${lib.getExe cfg.package}
+                '';
+                serviceConfig = {
+                  User = cfg.user;
+                  Group = cfg.group;
+                  Environment = [
+                    "SERVER_PORT=${toString cfg.port}"
+                    "SERVER_ASSETS_PATH=${cfg.assets}"
+                    "OAUTH_CALLBACK_URL=${cfg.oauthCallbackUrl}"
+                    "OAUTH_STORE_PATH=${cfg.store}"
+                  ];
                 };
+              };
             };
           };
 
-        devShell =
+        devShells.default =
           let
             scripts = pkgs.symlinkJoin {
               name = "scripts";
@@ -188,7 +188,7 @@
               scripts
               ormolu
             ];
-            inputsFrom = [ self.defaultPackage.${system}.env ];
+            inputsFrom = [ self.packages.${system}.default.env ];
           };
       });
 }
